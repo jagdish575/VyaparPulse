@@ -18,20 +18,22 @@ export function useApi<T>(fetcher: () => Promise<T>, deps: unknown[] = [], optio
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
   const alive = useRef(true);
+  const requestId = useRef(0);
 
   const load = useCallback(async (silent = false) => {
+    const id = ++requestId.current;
     if (silent) setRefreshing(true);
     else setLoading(true);
     try {
       const result = await fetcherRef.current();
-      if (!alive.current) return;
+      if (!alive.current || id !== requestId.current) return;
       setData(result);
       setError(null);
     } catch (e) {
-      if (!alive.current) return;
+      if (!alive.current || id !== requestId.current) return;
       setError(e instanceof ApiError ? e.message : "Something went wrong. Please try again.");
     } finally {
-      if (alive.current) {
+      if (alive.current && id === requestId.current) {
         setLoading(false);
         setRefreshing(false);
       }
@@ -40,12 +42,16 @@ export function useApi<T>(fetcher: () => Promise<T>, deps: unknown[] = [], optio
 
   useEffect(() => {
     alive.current = true;
-    if (!enabled) return;
+    requestId.current++;
+    if (!enabled) return () => { alive.current = false; requestId.current++; };
+    setData(null);
+    setError(null);
     load(false);
     let timer: ReturnType<typeof setInterval> | undefined;
     if (interval) timer = setInterval(() => load(true), interval);
     return () => {
       alive.current = false;
+      requestId.current++;
       if (timer) clearInterval(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api import agent_routes, routes
+from app.api import agent_routes, ledger_routes, routes
 from app.config import settings
 from app.database import SessionLocal, init_db
 from app.errors import KiraiError
@@ -67,6 +67,7 @@ async def unhandled_handler(_req: Request, exc: Exception):
 
 app.include_router(routes.router)
 app.include_router(agent_routes.router)
+app.include_router(ledger_routes.router)
 
 
 @app.get("/")

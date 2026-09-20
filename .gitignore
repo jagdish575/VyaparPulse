@@ -27,3 +27,6 @@ next-env.d.ts
 Thumbs.db
 .vscode/
 .idea/
+
+# Local implementation planning documents
+.local-plans/
