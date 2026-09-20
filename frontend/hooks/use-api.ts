@@ -1,0 +1,55 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ApiError } from "@/lib/api";
+
+interface Options {
+  /** Re-fetch silently every N ms (no loading flash). */
+  interval?: number;
+  enabled?: boolean;
+}
+
+export function useApi<T>(fetcher: () => Promise<T>, deps: unknown[] = [], options: Options = {}) {
+  const { interval, enabled = true } = options;
+  const [data, setData] = useState<T | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(enabled);
+  const [refreshing, setRefreshing] = useState(false);
+  const fetcherRef = useRef(fetcher);
+  fetcherRef.current = fetcher;
+  const alive = useRef(true);
+
+  const load = useCallback(async (silent = false) => {
+    if (silent) setRefreshing(true);
+    else setLoading(true);
+    try {
+      const result = await fetcherRef.current();
+      if (!alive.current) return;
+      setData(result);
+      setError(null);
+    } catch (e) {
+      if (!alive.current) return;
+      setError(e instanceof ApiError ? e.message : "Something went wrong. Please try again.");
+    } finally {
+      if (alive.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    alive.current = true;
+    if (!enabled) return;
+    load(false);
+    let timer: ReturnType<typeof setInterval> | undefined;
+    if (interval) timer = setInterval(() => load(true), interval);
+    return () => {
+      alive.current = false;
+      if (timer) clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, interval, load, ...deps]);
+
+  return { data, error, loading, refreshing, refetch: () => load(true), reload: () => load(false), setData };
+}
