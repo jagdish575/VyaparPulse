@@ -61,6 +61,11 @@ export default function DashboardPage() {
         }
       />
 
+      <Link href="/ledger" className="flex items-center justify-between gap-4 rounded-xl border bg-card p-5 transition hover:bg-muted">
+        <span><span className="block font-semibold">Open your store ledger</span><span className="text-sm text-muted-foreground">Record sales and collections, follow up on dues, and plan supplier payments.</span></span>
+        <ArrowRight className="size-5 shrink-0" />
+      </Link>
+
       {stats.error && !s ? (
         <ErrorState message={stats.error} onRetry={stats.reload} />
       ) : (
@@ -298,4 +303,3 @@ export default function DashboardPage() {
     </div>
   );
 }
-

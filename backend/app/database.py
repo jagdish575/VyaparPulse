@@ -38,5 +38,16 @@ def get_db():
 
 def init_db() -> None:
     from app import models  # noqa: F401  (register tables)
+    from app import ledger_models  # noqa: F401
+    from sqlalchemy import select
 
     Base.metadata.create_all(bind=engine)
+    with engine.begin() as conn:
+        # Additive bootstrap: never infer settlement of existing orders or rewrite them.
+        if conn.scalar(select(ledger_models.LedgerState.id)) is None:
+            from sqlalchemy.exc import IntegrityError
+            try:
+                with conn.begin_nested():
+                    conn.execute(ledger_models.LedgerState.__table__.insert().values(id=1, revision=0))
+            except IntegrityError:
+                pass  # another worker completed the same bootstrap

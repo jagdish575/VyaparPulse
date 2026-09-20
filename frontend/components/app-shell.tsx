@@ -14,6 +14,7 @@ import {
   ShoppingBag,
   Sparkles,
   Users,
+  Wallet,
   type LucideIcon,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
@@ -32,6 +33,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/ledger", label: "Store Ledger", icon: Wallet },
   { href: "/operator", label: "AI Operator", icon: Sparkles },
   { href: "/orders", label: "Orders", icon: ShoppingBag },
   { href: "/inventory", label: "Inventory", icon: Boxes },
