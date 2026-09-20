@@ -29,6 +29,9 @@ Customer request → EURI understands language → products matched in DB → li
 ## Features
 
 - **AI Operator** (main demo screen): chat + live execution timeline + order confirmation card + inventory-update badges.
+- **Voice:** tap the mic (or "Speak an order") and say the request in English/Hinglish. The live transcript appears in the
+  input and is sent automatically when you stop talking; KirAI reads its reply aloud (mute with the speaker icon). Uses the
+  browser's built-in Web Speech API (Chrome/Edge/Safari; needs microphone permission and internet) — no extra services.
 - Handles: multi-item orders, unknown products (with suggestions), insufficient / out-of-stock, **ambiguous products**
   (asks "Which oil?" with tappable options and never guesses), empty requests, invalid quantities, stock questions
   ("atta khatam ho gaya kya?"), low-stock report, greetings.
@@ -190,12 +193,14 @@ endpoints · polished responsive UI · loading, error and toast states · demo r
 - EURI latency is outside our control (observed anywhere from ~3s to 40s+). Calls slower than `EURI_TIMEOUT_SECONDS`
   fall back to the local parser (clearly labelled) so the workflow stays reliable.
 - The "confirmation" is generated for the customer in the app; no SMS/WhatsApp is actually sent.
+- Voice recognition is English-India (Roman script), so Hinglish works but Devanagari Hindi does not; it is unavailable in Firefox
+  (the mic button is hidden there and typing still works). A misheard sentence is sent as heard, so check the transcript.
 - No authentication (out of scope); one demo store. SQLite on Render/Railway free tiers is ephemeral — the app auto-seeds on start.
 - Quantities are counted in packs/units ("5 kg atta" is not converted to pack sizes).
 
 ## Future improvements
 
-WhatsApp/voice intake, UPI payments, supplier reorder automation for low stock, multi-store support, streaming
+WhatsApp intake, Hindi (Devanagari) voice, UPI payments, supplier reorder automation for low stock, multi-store support, streaming
 (SSE) execution timeline, customer memory ("my usual").
 
 ## Deployment

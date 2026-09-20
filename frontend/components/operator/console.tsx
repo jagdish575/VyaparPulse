@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useSearchParams } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
-import { AlertTriangle, ArrowUp, Cpu, RotateCcw, Sparkles, Store, User, Wand2, Zap } from "lucide-react";
+import { AlertTriangle, ArrowUp, Cpu, Mic, RotateCcw, Sparkles, Square, Store, User, Volume2, VolumeX, Wand2, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { useApi } from "@/hooks/use-api";
+import { canSpeak, speak, stopSpeaking, useVoiceInput } from "@/hooks/use-voice";
 import { cn } from "@/lib/utils";
 import { inr } from "@/lib/format";
 import { ExecutionTimeline, PIPELINE, STEP_META, type TimelineItem } from "@/components/operator/timeline";
@@ -27,6 +28,7 @@ interface ChatMsg {
   error?: boolean;
 }
 
+const noopSubscribe = () => () => {};
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -54,6 +56,7 @@ export function OperatorConsole() {
   const [order, setOrder] = useState<AgentOrder | null>(null);
   const [showInventory, setShowInventory] = useState(false);
   const [elapsed, setElapsed] = useState<number | null>(null);
+  const [voiceReplies, setVoiceReplies] = useState(true);
 
   const draftRef = useRef<Draft | null>(null);
   const runRef = useRef(0);
@@ -96,9 +99,10 @@ export function OperatorConsole() {
   }, []);
 
   const send = useCallback(
-    async (raw: string) => {
+    async (raw: string, viaVoice = false) => {
       const text = raw.trim();
       if (!text || busy) return;
+      stopSpeaking();
       const run = ++runRef.current;
       const startedAt = performance.now();
       setMessages((m) => [...m, { id: uid(), role: "user", text }]);
@@ -131,6 +135,7 @@ export function OperatorConsole() {
         setLast(res);
         setElapsed(Math.round(performance.now() - startedAt));
         setMessages((m) => [...m, { id: uid(), role: "ai", text: res.reply, response: res }]);
+        if (viaVoice && voiceReplies) speak(res.reply); // answer out loud when the customer spoke
 
         if (res.order) {
           setOrder(res.order);
@@ -152,8 +157,31 @@ export function OperatorConsole() {
         if (runRef.current === run) setBusy(false);
       }
     },
-    [busy, customer?.address, customerId, reveal]
+    [busy, customer, customerId, reveal, voiceReplies]
   );
+
+  // Voice input: live transcript appears in the box; when the customer stops talking it is sent like typed text.
+  const voice = useVoiceInput({
+    onInterim: setInput,
+    onFinal: (text) => {
+      setInput(text);
+      send(text, true);
+    },
+    onError: (message) => {
+      setInput("");
+      toast.error("Voice input", { description: message });
+    },
+  });
+  const speechOut = useSyncExternalStore(noopSubscribe, canSpeak, () => false);
+  const toggleMic = () => {
+    if (voice.listening) {
+      voice.stop();
+      return;
+    }
+    stopSpeaking(); // don't let KirAI's own voice leak into the microphone
+    setInput("");
+    voice.start();
+  };
 
   // Quick AI command from the dashboard: /operator?q=...
   useEffect(() => {
@@ -166,6 +194,8 @@ export function OperatorConsole() {
 
   const resetChat = () => {
     runRef.current++;
+    voice.cancel();
+    stopSpeaking();
     draftRef.current = null;
     setMessages([WELCOME]);
     setTimeline(idleTimeline());
@@ -220,6 +250,23 @@ export function OperatorConsole() {
                   ))}
                 </select>
               </div>
+              {speechOut && voice.supported && (
+                <button
+                  onClick={() => {
+                    if (voiceReplies) stopSpeaking();
+                    setVoiceReplies((v) => !v);
+                  }}
+                  title={voiceReplies ? "Spoken replies on (for voice requests) — click to mute" : "Spoken replies muted — click to turn on"}
+                  aria-label={voiceReplies ? "Mute spoken replies" : "Turn on spoken replies"}
+                  aria-pressed={voiceReplies}
+                  className={cn(
+                    "rounded-lg border p-1.5 transition hover:bg-muted",
+                    voiceReplies ? "text-primary" : "text-muted-foreground"
+                  )}
+                >
+                  {voiceReplies ? <Volume2 className="size-3.5" /> : <VolumeX className="size-3.5" />}
+                </button>
+              )}
               <button
                 onClick={resetChat}
                 title="Clear conversation"
@@ -271,6 +318,15 @@ export function OperatorConsole() {
               >
                 <Wand2 className="size-3" /> Use demo request
               </button>
+              {voice.supported && (
+                <button
+                  disabled={busy || voice.listening}
+                  onClick={toggleMic}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-primary/25 bg-primary/5 px-3 py-1 text-xs font-medium text-primary transition hover:bg-primary/10 disabled:opacity-50"
+                >
+                  <Mic className="size-3" /> Speak an order
+                </button>
+              )}
               {QUICK_COMMANDS.map((q) => (
                 <button
                   key={q}
@@ -292,12 +348,34 @@ export function OperatorConsole() {
               <input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="Tell KirAI what your customer needs..."
+                placeholder={voice.listening ? "Listening… speak your order" : "Tell KirAI what your customer needs..."}
                 disabled={busy}
+                readOnly={voice.listening}
                 maxLength={600}
                 className="min-w-0 flex-1 bg-transparent py-2 text-[15px] outline-none placeholder:text-muted-foreground/70"
                 aria-label="Customer request"
               />
+              {voice.supported && (
+                <button
+                  type="button"
+                  onClick={toggleMic}
+                  disabled={busy}
+                  title={voice.listening ? "Stop listening" : "Speak your order (English / Hinglish)"}
+                  aria-label={voice.listening ? "Stop listening" : "Start voice input"}
+                  aria-pressed={voice.listening}
+                  className={cn(
+                    "relative flex size-9 shrink-0 items-center justify-center rounded-lg border transition disabled:opacity-40",
+                    voice.listening
+                      ? "border-red-300 bg-red-50 text-red-600"
+                      : "bg-background text-muted-foreground hover:border-primary/40 hover:text-primary"
+                  )}
+                >
+                  {voice.listening && (
+                    <span className="absolute inset-0 animate-ping rounded-lg bg-red-400/30" aria-hidden />
+                  )}
+                  {voice.listening ? <Square className="relative size-3.5 fill-current" /> : <Mic className="size-[18px]" />}
+                </button>
+              )}
               <button
                 type="submit"
                 disabled={busy || !input.trim()}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
@@ -25,12 +25,13 @@ import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const SUGGESTIONS = ["Order 2 Maggi", "Check atta stock", "Show low stock"];
+const noopSubscribe = () => () => {};
 
 export default function DashboardPage() {
   const router = useRouter();
   const [command, setCommand] = useState("");
-  const [hello, setHello] = useState("Good morning"); // set after mount to avoid a server/client time mismatch
-  useEffect(() => setHello(greeting()), []);
+  // Time-of-day greeting: server snapshot is fixed, the client value is applied after hydration (no mismatch).
+  const hello = useSyncExternalStore(noopSubscribe, greeting, () => "Good morning");
   const stats = useApi(() => api.dashboard(), [], { interval: 15000 });
   const orders = useApi(() => api.orders(6), [], { interval: 15000 });
   const inventory = useApi(() => api.inventory(), [], { interval: 15000 });

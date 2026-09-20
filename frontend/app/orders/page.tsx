@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { BadgeIndianRupee, Clock, RefreshCw, Search, ShoppingBag, Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/hooks/use-api";
-import { dateTime, inr, isToday, timeAgo } from "@/lib/format";
+import { dateTime, inr, timeAgo } from "@/lib/format";
 import { Card, EmptyState, ErrorState, OrderStatusBadge, PageHeader, RowsSkeleton, SourceBadge, StatCard } from "@/components/shared";
 import { OrderDrawer } from "@/components/orders/order-drawer";
 import { Button } from "@/components/ui/button";
