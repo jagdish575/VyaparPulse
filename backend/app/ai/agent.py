@@ -9,6 +9,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.ai.euri_client import EuriClient
@@ -16,7 +17,7 @@ from app.ai.parser import ParsedRequest, parse_message
 from app.ai.tools import call_tool
 from app.config import settings
 from app.errors import InsufficientStockError, KiraiError
-from app.models import Product
+from app.models import InventoryLog, Product
 from app.schemas import (
     AgentRequest,
     AgentResponse,
@@ -35,6 +36,7 @@ from app.schemas import (
 from app.services import inventory_service
 from app.services.activity_service import log_activity
 from app.services.inventory_service import Resolution, choose_from_options, stock_status
+from app.services import order_service
 from app.services.order_service import ActivityEvent
 from app.utils import utcnow
 
@@ -80,9 +82,11 @@ class Line:
 class AgentRun:
     """One request through the pipeline. Collects real steps, then builds the response."""
 
-    def __init__(self, db: Session, client: EuriClient):
+    def __init__(self, db: Session, client: EuriClient, idempotency_key: str | None = None):
         self.db = db
         self.client = client
+        self.idem_key = idempotency_key
+        self.fingerprint = ""
         self.steps: list[AgentStep] = []
         self.events: list[ActivityEvent] = []
         self.parser: ParserInfo | None = None
@@ -136,6 +140,14 @@ class AgentRun:
     def execute(self, req: AgentRequest) -> AgentResponse:
         message = req.message.strip()
         customer = self.tool("get_customer", customer_id=req.customer_id or settings.DEMO_CUSTOMER_ID)
+
+        if self.idem_key:  # a retry of an already-processed request returns the earlier result unchanged
+            self.fingerprint = order_service.payload_fingerprint("agent", {
+                "m": message, "c": customer.id, "a": req.delivery_address,
+                "d": req.draft.model_dump() if req.draft else None})
+            replay = order_service.check_replay(self.db, self.idem_key, "agent", self.fingerprint)
+            if replay:
+                return self.replay(replay)
 
         if not message:
             self.add_step("parse_request", "needs_input", "No request received", time.perf_counter(), event=False)
@@ -324,7 +336,12 @@ class AgentRun:
         try:
             result = self.tool("create_order", customer_id=customer.id, items=items,
                                delivery_address=drop_address or None, delivery=want_delivery,
-                               source="ai_agent", original_request=original, pre_events=list(self.events))
+                               source="ai_agent", original_request=original, pre_events=list(self.events),
+                               idempotency_key=self.idem_key, idempotency_scope="agent",
+                               fingerprint=self.fingerprint)
+        except order_service.DuplicateRequestError:  # concurrent retry: the other request created the order
+            replay = order_service.check_replay(self.db, self.idem_key, "agent", self.fingerprint)
+            return self.replay(replay)
         except InsufficientStockError as exc:  # stock changed between the check and the commit
             self.add_step("create_order", "failed", "Stock changed while ordering - nothing was changed", started, event=False)
             self.skip_remaining()
@@ -377,6 +394,21 @@ class AgentRun:
                             inventory_updates=confirmation.inventory_changes)
 
     # ---- outcomes ------------------------------------------------------------------------------
+    def replay(self, record) -> AgentResponse:
+        """Answer a retry from the stored result. Nothing is created and no stock is touched."""
+        if record.response:
+            return AgentResponse.model_validate_json(record.response)
+        order = order_service.get_order(self.db, record.order_id)  # first attempt committed but its reply was lost
+        changes = list(self.db.scalars(select(InventoryLog).where(InventoryLog.order_id == order.id)))
+        confirmation = OrderConfirmation(
+            **OrderOut.model_validate(order).model_dump(),
+            customer=CustomerOut.model_validate(order.customer),
+            inventory_changes=[InventoryLogOut.model_validate(c) for c in changes],
+        )
+        reply = f"Order #{order.id} was already confirmed. Total {inr(order.total)}. Nothing was ordered twice."
+        return self.respond(intent="place_order", status="confirmed", success=True, order=confirmation,
+                            reply=reply, message="Order confirmed successfully.")
+
     def _log_rejection(self, text: str) -> None:
         self._log("request_rejected", "failed", text[:300])
 
@@ -444,10 +476,14 @@ def _dedupe(cards: list[ProductCard]) -> list[ProductCard]:
     return out
 
 
-def process_message(db: Session, req: AgentRequest, client: EuriClient | None = None) -> AgentResponse:
-    run = AgentRun(db, client or EuriClient())
+def process_message(db: Session, req: AgentRequest, client: EuriClient | None = None,
+                    idempotency_key: str | None = None) -> AgentResponse:
+    run = AgentRun(db, client or EuriClient(), idempotency_key)
     try:
-        return run.execute(req)
+        result = run.execute(req)
+        if idempotency_key and result.order and result.status == "confirmed":
+            order_service.store_response(db, idempotency_key, result.model_dump_json())
+        return result
     except KiraiError as exc:
         db.rollback()
         return run.respond(intent="unknown", status="error", reply=exc.message)

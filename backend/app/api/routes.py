@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, Query
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Header, Query
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -21,12 +23,14 @@ from app.seed import reset_database, seed_database
 from app.services import activity_service, customer_service, inventory_service, order_service
 from app.utils import utcnow
 
-router = APIRouter(prefix="/api")
+router = APIRouter(prefix="/api")  # private: mounted behind require_owner in main.py
+public_router = APIRouter(prefix="/api")  # public: liveness only
+IdemKey = Annotated[str | None, Header(alias="Idempotency-Key", min_length=8, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")]
 
 
 # ----------------------------------------------------------------------------- health / system
 
-@router.get("/health")
+@public_router.get("/health")
 def health(db: Session = Depends(get_db)):
     try:
         db.execute(text("SELECT 1"))
@@ -37,7 +41,6 @@ def health(db: Session = Depends(get_db)):
         "status": "ok" if db_ok else "degraded",
         "database": "connected" if db_ok else "unavailable",
         "ai_configured": bool(settings.EURI_API_KEY),
-        "store": settings.STORE_NAME,
         "time": utcnow().isoformat() + "Z",
     }
 
@@ -48,6 +51,7 @@ def store_settings(db: Session = Depends(get_db)):
         "store": {"name": settings.STORE_NAME, "location": settings.STORE_LOCATION,
                   "delivery_charge": settings.DELIVERY_CHARGE, "free_delivery_above": settings.FREE_DELIVERY_ABOVE},
         "ai": {"provider": "EURI", "model": settings.EURI_MODEL, "configured": bool(settings.EURI_API_KEY)},
+        "demo_mode": settings.DEMO_MODE,
         "database": {"engine": "SQLite", "products": len(inventory_service.list_products(db, include_inactive=True)),
                      "customers": len(customer_service.list_customers(db)),
                      "orders": order_service.dashboard_stats(db)["total_orders"]},
@@ -101,15 +105,24 @@ def list_orders(limit: int = Query(default=100, ge=1, le=500), db: Session = Dep
 
 
 @router.post("/orders", response_model=OrderOut, status_code=201)
-def create_order(body: OrderCreateIn, db: Session = Depends(get_db)):
-    result = order_service.create_order(
-        db,
-        body.customer_id,
-        [i.model_dump() for i in body.items],
-        body.delivery_address,
-        body.delivery,
-        source="manual",
-    )
+def create_order(body: OrderCreateIn, db: Session = Depends(get_db), key: IdemKey = None):
+    """Send an `Idempotency-Key` header so a retry after a lost response returns the SAME order
+    (no second order, no second stock deduction). Reusing a key with different details is rejected (409)."""
+    payload = body.model_dump()
+    payload["items"] = sorted(payload["items"], key=lambda i: i["product_id"])
+    fingerprint = order_service.payload_fingerprint("order", payload)
+    if key:
+        replay = order_service.check_replay(db, key, "order", fingerprint)
+        if replay:
+            return order_service.get_order(db, replay.order_id)
+    try:
+        result = order_service.create_order(
+            db, body.customer_id, [i.model_dump() for i in body.items], body.delivery_address, body.delivery,
+            source="manual", idempotency_key=key, idempotency_scope="order", fingerprint=fingerprint,
+        )
+    except order_service.DuplicateRequestError:  # a concurrent retry won the race
+        replay = order_service.check_replay(db, key, "order", fingerprint)
+        return order_service.get_order(db, replay.order_id)
     return result.order
 
 
@@ -155,13 +168,17 @@ def activity(limit: int = Query(default=60, ge=1, le=300), db: Session = Depends
 
 @router.post("/demo/reset")
 def demo_reset():
-    counts = reset_database()
+    counts = reset_database()  # raises ForbiddenError unless DEMO_MODE is on
     return {"success": True, "message": "Demo data reset successfully.", **counts}
 
 
 @router.post("/seed")
 def seed():
     from app.database import SessionLocal
+    from app.errors import ForbiddenError
+
+    if not settings.DEMO_MODE:
+        raise ForbiddenError("Seeding demo data is disabled. Set DEMO_MODE=true to enable it.")
 
     init_db()
     with SessionLocal() as db:

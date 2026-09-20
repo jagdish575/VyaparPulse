@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import { AlertTriangle, ArrowUp, Cpu, Mic, RotateCcw, Sparkles, Square, Store, User, Volume2, VolumeX, Wand2, Zap } from "lucide-react";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+import { api, newRequestKey } from "@/lib/api";
 import { useApi } from "@/hooks/use-api";
 import { canSpeak, speak, stopSpeaking, useVoiceInput } from "@/hooks/use-voice";
 import { cn } from "@/lib/utils";
@@ -60,6 +60,9 @@ export function OperatorConsole() {
 
   const draftRef = useRef<Draft | null>(null);
   const runRef = useRef(0);
+  // Idempotency: an action that failed with an unknown outcome (lost response) is retried with the SAME key,
+  // so the server replays the first result instead of creating a second order.
+  const pendingRef = useRef<{ fingerprint: string; key: string } | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const timelineScroller = useRef<HTMLDivElement>(null);
   const autoSent = useRef(false);
@@ -121,12 +124,14 @@ export function OperatorConsole() {
         }))
       );
       try {
-        const res = await api.process({
-          message: text,
-          customer_id: customerId,
-          delivery_address: customer?.address,
-          draft: draftRef.current,
-        });
+        const fingerprint = JSON.stringify([text, customerId, customer?.address, draftRef.current]);
+        const key = pendingRef.current?.fingerprint === fingerprint ? pendingRef.current.key : newRequestKey();
+        pendingRef.current = { fingerprint, key };
+        const res = await api.process(
+          { message: text, customer_id: customerId, delivery_address: customer?.address, draft: draftRef.current },
+          key
+        );
+        pendingRef.current = null; // the outcome is known now
         if (runRef.current !== run) return;
         await reveal(res, run);
         if (runRef.current !== run) return;

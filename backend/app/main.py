@@ -1,13 +1,14 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api import agent_routes, ledger_routes, routes
+from app import auth
+from app.api import agent_routes, auth_routes, ledger_routes, routes
 from app.config import settings
 from app.database import SessionLocal, init_db
 from app.errors import KiraiError
@@ -20,10 +21,13 @@ log = logging.getLogger("kirai")
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
-    with SessionLocal() as db:
-        result = seed_database(db)  # no-op when data already exists
-    if result.get("seeded"):
-        log.info("Database seeded: %s", result)
+    if settings.DEMO_MODE:  # never populate a real store with fictitious orders
+        with SessionLocal() as db:
+            result = seed_database(db)  # no-op when data already exists
+        if result.get("seeded"):
+            log.info("Demo database seeded: %s", result)
+    else:
+        log.info("DEMO_MODE is off: no demo data is created and demo reset/seed are disabled.")
     if not settings.EURI_API_KEY:
         log.warning("EURI_API_KEY is not set - the AI parser will use the local rule-based fallback.")
     yield
@@ -33,10 +37,10 @@ app = FastAPI(title="KirAI API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=list({settings.FRONTEND_URL, "http://localhost:3000", "http://127.0.0.1:3000"}),
-    allow_origin_regex=r"https://.*\.vercel\.app",
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=auth.allowed_origins(),  # exact origins only (no wildcard): cookies are sent to this list
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Idempotency-Key"],
 )
 
 
@@ -65,9 +69,13 @@ async def unhandled_handler(_req: Request, exc: Exception):
     return _err(500, "server_error", "Something went wrong on our side. Please try again.")
 
 
-app.include_router(routes.router)
-app.include_router(agent_routes.router)
-app.include_router(ledger_routes.router)
+# Public: liveness + login. Everything else needs the store owner's session (see app/auth.py).
+app.include_router(routes.public_router)
+app.include_router(auth_routes.router)
+_private = [Depends(auth.require_owner)]
+app.include_router(routes.router, dependencies=_private)
+app.include_router(agent_routes.router, dependencies=_private)
+app.include_router(ledger_routes.router, dependencies=_private)
 
 
 @app.get("/")

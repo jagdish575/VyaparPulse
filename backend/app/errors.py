@@ -15,6 +15,26 @@ class NotFoundError(KiraiError):
     code = "not_found"
 
 
+class UnauthorizedError(KiraiError):
+    status_code = 401
+    code = "unauthorized"
+
+
+class ForbiddenError(KiraiError):
+    status_code = 403
+    code = "forbidden"
+
+
+class UnavailableError(KiraiError):
+    status_code = 503
+    code = "unavailable"
+
+
+class ConflictError(KiraiError):
+    status_code = 409
+    code = "conflict"
+
+
 class ValidationFailedError(KiraiError):
     status_code = 422
     code = "invalid_request"

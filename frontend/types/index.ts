@@ -130,6 +130,7 @@ export interface DashboardStats {
 export interface SettingsInfo {
   store: { name: string; location: string; delivery_charge: number; free_delivery_above: number };
   ai: { provider: string; model: string; configured: boolean };
+  demo_mode: boolean;
   database: { engine: string; products: number; customers: number; orders: number };
 }
 

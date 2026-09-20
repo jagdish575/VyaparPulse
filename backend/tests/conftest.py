@@ -5,6 +5,7 @@ import tempfile
 _tmp = tempfile.mkdtemp(prefix="kirai_test_")
 os.environ["DATABASE_URL"] = "sqlite:///" + os.path.join(_tmp, "test.db").replace("\\", "/")
 os.environ["EURI_API_KEY"] = ""
+os.environ["DEMO_MODE"] = "true"  # tests exercise reset/seed; individual tests switch it off to prove the guard
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -45,3 +46,16 @@ def set_stock(db, name: str, qty: int) -> None:
 def stock_of(db, name: str) -> int:
     db.expire_all()
     return db.query(Product).filter(Product.name == name).one().stock_quantity
+
+
+OWNER_PASSWORD = "correct horse battery staple"
+
+
+def sign_in(client, monkeypatch, password: str = OWNER_PASSWORD):
+    """Configure an owner password and log the test client in (cookie is kept by the client)."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "OWNER_PASSWORD", password)
+    res = client.post("/api/auth/login", json={"password": password})
+    assert res.status_code == 200, res.text
+    return client

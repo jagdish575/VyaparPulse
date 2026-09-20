@@ -1,13 +1,16 @@
 """Orders. Creating an order and deducting inventory happen in ONE database transaction."""
+import hashlib
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.config import settings
-from app.errors import InsufficientStockError, KiraiError, NotFoundError, ValidationFailedError
-from app.models import ActivityLog, Customer, InventoryLog, Order, OrderItem, Product
+from app.errors import ConflictError, InsufficientStockError, KiraiError, NotFoundError, ValidationFailedError
+from app.models import ActivityLog, Customer, InventoryLog, Order, OrderItem, OrderRequest, Product
 from app.services import inventory_service
 from app.services.activity_service import log_activity
 from app.utils import IST, ist_day_bounds, money, utcnow
@@ -67,6 +70,33 @@ class OrderResult:
     inventory_changes: list[InventoryLog]
     created_event: ActivityEvent
     inventory_event: ActivityEvent
+
+
+class DuplicateRequestError(KiraiError):
+    """The idempotency key was already used to create an order (a retry). The existing order is the result."""
+
+    status_code = 409
+    code = "duplicate_request"
+
+
+def payload_fingerprint(scope: str, payload: dict) -> str:
+    return hashlib.sha256(json.dumps([scope, payload], sort_keys=True, default=str).encode()).hexdigest()
+
+
+def check_replay(db: Session, key: str, scope: str, fingerprint: str) -> OrderRequest | None:
+    """Return the earlier request for this key (a replay), None if the key is new. Reusing a key for a
+    different payload is rejected: it would silently return an unrelated order."""
+    record = db.get(OrderRequest, key)
+    if record is None:
+        return None
+    if record.scope != scope or record.fingerprint != fingerprint:
+        raise ConflictError("This request key was already used for different details. Start a new request.")
+    return record
+
+
+def store_response(db: Session, key: str, response_json: str) -> None:
+    db.execute(update(OrderRequest).where(OrderRequest.key == key).values(response=response_json))
+    db.commit()
 
 
 def delivery_charge_for(subtotal: float, delivery: bool) -> float:
@@ -145,6 +175,9 @@ def create_order(
     original_request: str | None = None,
     pre_events: list[ActivityEvent] | None = None,
     created_at: datetime | None = None,
+    idempotency_key: str | None = None,
+    idempotency_scope: str = "order",
+    fingerprint: str | None = None,
 ) -> OrderResult:
     """BEGIN → order → items → inventory deduction → inventory logs → activity logs → COMMIT.
     Any failure ROLLBACKs everything: an order is never left partially created."""
@@ -182,6 +215,10 @@ def create_order(
             )
         db.add(order)
         db.flush()  # assigns order.id inside the open transaction
+        if idempotency_key:  # same transaction: the key exists if and only if the order does
+            db.add(OrderRequest(key=idempotency_key, scope=idempotency_scope, fingerprint=fingerprint or "",
+                                order_id=order.id, created_at=now))
+            db.flush()
 
         for ev in pre_events or []:
             log_activity(db, ev.action, ev.status, ev.message, order.id, ev.timestamp)
@@ -202,6 +239,11 @@ def create_order(
 
         db.commit()
         return OrderResult(order, quote, changes, created_ev, inv_ev)
+    except IntegrityError:
+        db.rollback()
+        if idempotency_key and db.get(OrderRequest, idempotency_key) is not None:
+            raise DuplicateRequestError("This request was already processed.") from None  # concurrent retry
+        raise
     except Exception:
         db.rollback()
         raise

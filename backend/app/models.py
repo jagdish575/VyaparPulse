@@ -132,3 +132,27 @@ class ActivityLog(Base):
     status: Mapped[str] = mapped_column(String(20))  # completed | failed | needs_input | info
     message: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class OrderRequest(Base):
+    """One row per idempotency key used to create an order (manual or AI). The primary key makes a duplicate
+    impossible even under concurrent retries; the row is written in the SAME transaction as the order."""
+
+    __tablename__ = "order_requests"
+
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(20))  # "order" | "agent"
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"), index=True)
+    response: Mapped[str | None] = mapped_column(Text, nullable=True)  # cached agent response (JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class OwnerSession(Base):
+    """Server-side login session. Only the SHA-256 of the cookie token is stored."""
+
+    __tablename__ = "owner_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)

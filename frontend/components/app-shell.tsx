@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import {
   Activity,
   Bell,
+  LogOut,
   Boxes,
   LayoutDashboard,
   Menu,
@@ -19,6 +20,7 @@ import {
 } from "lucide-react";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { Logo } from "@/components/logo";
+import { useAuth } from "@/components/auth-provider";
 import { ActivityIcon } from "@/components/activity-feed";
 import { api } from "@/lib/api";
 import { useApi } from "@/hooks/use-api";
@@ -175,6 +177,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [menu, setMenu] = useState(false);
   const [search, setSearch] = useState("");
+  const { required: loginRequired, signOut } = useAuth();
   const current = NAV.find((n) => isActive(pathname, n.href));
 
   const submitSearch = () => {
@@ -246,6 +249,16 @@ export function AppShell({ children }: { children: ReactNode }) {
               />
             </form>
             <Notifications />
+            {loginRequired && (
+              <button
+                onClick={() => void signOut()}
+                title="Sign out"
+                aria-label="Sign out"
+                className="flex size-10 items-center justify-center rounded-xl border bg-card text-muted-foreground transition hover:text-foreground"
+              >
+                <LogOut className="size-[18px]" />
+              </button>
+            )}
             <div className="flex items-center gap-2.5 rounded-xl border bg-card py-1.5 pl-1.5 pr-3">
               <div className="flex size-7 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-600 to-violet-500 text-xs font-semibold text-white">RS</div>
               <div className="hidden leading-tight sm:block">

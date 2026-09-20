@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, Query
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Header, Query
 from sqlalchemy.orm import Session
 
 from app.ai.agent import process_message
@@ -8,12 +10,14 @@ from app.database import get_db
 from app.schemas import AgentRequest, AgentResponse
 
 router = APIRouter(prefix="/api")
+IdemKey = Annotated[str | None, Header(alias="Idempotency-Key", min_length=8, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")]
 
 
 @router.post("/agent/process", response_model=AgentResponse)
-def agent_process(body: AgentRequest, db: Session = Depends(get_db)):
-    """Customer message in -> real workflow out (real steps, real order, real inventory deduction)."""
-    return process_message(db, body)
+def agent_process(body: AgentRequest, db: Session = Depends(get_db), key: IdemKey = None):
+    """Customer message in -> real workflow out (real steps, real order, real inventory deduction).
+    With an `Idempotency-Key`, retrying the same request never creates a second order or deducts stock twice."""
+    return process_message(db, body, idempotency_key=key)
 
 
 @router.get("/agent/tools")

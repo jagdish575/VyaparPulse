@@ -111,8 +111,15 @@ export default function SettingsPage() {
           <Card>
             <CardHeader title="Demo Controls" description="Get back to a clean, repeatable demo" />
             <div className="space-y-4 p-5">
+              {s && !s.demo_mode ? (
+                <p className="rounded-xl border border-dashed bg-muted/40 p-4 text-sm text-muted-foreground">
+                  Demo reset is turned off for this store, so your real orders, stock and ledger cannot be deleted from here.
+                  It is only available on a demo deployment (<code className="font-mono text-xs">DEMO_MODE=true</code>).
+                </p>
+              ) : (
+              <>
               <p className="text-sm text-muted-foreground">
-                Deletes all orders, order items and activity logs, restores every product to its seed stock and recreates the demo customers.
+                Deletes all orders, order items, activity logs and the financial ledger, restores every product to its seed stock and recreates the demo customers.
               </p>
               {confirming ? (
                 <div className="flex flex-wrap items-center gap-2 rounded-xl border border-red-200 bg-red-50 p-3">
@@ -126,6 +133,8 @@ export default function SettingsPage() {
                 <Button variant="outline" onClick={() => setConfirming(true)} className="gap-2">
                   <RotateCcw className="size-4" /> Reset Demo Data
                 </Button>
+              )}
+              </>
               )}
             </div>
           </Card>

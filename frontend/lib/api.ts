@@ -13,6 +13,9 @@ import type {
   SettingsInfo,
 } from "@/types";
 
+/** Fired when the API answers 401 (session expired / signed out) so the app can show the login screen. */
+export const UNAUTHORIZED_EVENT = "kirai:unauthorized";
+
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
 
 /** An error that is always safe to show to a user. Raw backend/network errors are never exposed. */
@@ -31,11 +34,15 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init,
       headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
       cache: "no-store",
+      credentials: "include", // the owner session lives in an HttpOnly cookie set by the API
     });
   } catch {
     throw new ApiError("We couldn't reach the KirAI server. Check that the backend is running and try again.");
   }
   if (!res.ok) {
+    if (res.status === 401 && typeof window !== "undefined" && !path.startsWith("/api/auth/")) {
+      window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+    }
     let message = "Something went wrong. Please try again.";
     try {
       const body = await res.json();
@@ -64,6 +71,41 @@ export const api = {
   aiStatus: (check = false) => request<AiStatus>(`/api/ai/status${check ? "?check=true" : ""}`),
   resetDemo: () =>
     request<{ success: boolean; message: string; products: number; orders: number }>("/api/demo/reset", { method: "POST" }),
-  process: (body: { message: string; customer_id?: number; delivery_address?: string; draft?: Draft | null }) =>
-    request<AgentResponse>("/api/agent/process", { method: "POST", body: JSON.stringify(body) }),
+  /** `key` makes a retry safe: the same key + request never creates a second order or deducts stock twice. */
+  process: (body: { message: string; customer_id?: number; delivery_address?: string; draft?: Draft | null }, key?: string) =>
+    request<AgentResponse>("/api/agent/process", {
+      method: "POST",
+      headers: key ? { "Idempotency-Key": key } : undefined,
+      body: JSON.stringify(body),
+    }),
 };
+
+export interface AuthStatus {
+  mode: "required" | "open" | "unconfigured";
+  auth_required: boolean;
+  authenticated: boolean;
+}
+
+export const authApi = {
+  me: () => request<AuthStatus>("/api/auth/me"),
+  login: (password: string) =>
+    request<{ authenticated: boolean }>("/api/auth/login", { method: "POST", body: JSON.stringify({ password }) }),
+  logout: () => request<{ authenticated: boolean }>("/api/auth/logout", { method: "POST" }),
+};
+
+/** New random key for one user action (safe to reuse only when retrying that exact same action). */
+export function newRequestKey(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `k${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+}
+
+/** Unfinished forms are kept locally across reloads; sign-out removes them (they may hold customer/financial details). */
+export function clearLocalDrafts() {
+  try {
+    Object.keys(localStorage)
+      .filter((k) => k.startsWith("vyaparpulse:") || k.startsWith("kirai:"))
+      .forEach((k) => localStorage.removeItem(k));
+  } catch {
+    /* storage unavailable */
+  }
+}

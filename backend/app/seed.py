@@ -106,10 +106,17 @@ def seed_database(db: Session, with_history: bool = True) -> dict:
 
 
 def reset_database() -> dict:
-    """Drop every table and rebuild the seed data (orders, items, logs, stock, customers)."""
-    from app import models  # noqa: F401
+    """Drop EVERY table (orders, stock, customers and the financial ledger) and rebuild the demo seed data.
+    Refuses to run unless DEMO_MODE is on, so a real store can never be wiped by accident or by a stray request."""
+    from app import ledger_models, models  # noqa: F401  (register all tables so drop_all sees them)
+    from app.config import settings
+    from app.errors import ForbiddenError
 
-    Base.metadata.drop_all(bind=engine)
+    if not settings.DEMO_MODE:
+        raise ForbiddenError("Demo reset is disabled. It permanently deletes all data and only runs when DEMO_MODE=true.")
+
+    # Keep login sessions: resetting demo data must not sign the owner out.
+    Base.metadata.drop_all(bind=engine, tables=[t for t in Base.metadata.sorted_tables if t.name != "owner_sessions"])
     init_db()
     with SessionLocal() as db:
         return seed_database(db)
@@ -117,7 +124,12 @@ def reset_database() -> dict:
 
 def main() -> None:
     if "--reset" in sys.argv:
-        print("Reset:", reset_database())
+        from app.errors import ForbiddenError
+
+        try:
+            print("Reset:", reset_database())
+        except ForbiddenError as exc:
+            sys.exit(exc.message)
         return
     init_db()
     with SessionLocal() as db:

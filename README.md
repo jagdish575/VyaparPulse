@@ -55,12 +55,13 @@ kirai/
 │   ├── requirements.txt  .env.example
 │   ├── app/
 │   │   ├── main.py  config.py  database.py  models.py  schemas.py  errors.py  utils.py  seed.py
+│   │   ├── auth.py  auth_setup.py  ledger_models.py  ledger_schemas.py
 │   │   ├── ai/         euri_client.py  prompts.py  parser.py  tools.py  agent.py
-│   │   ├── services/   inventory_service.py  order_service.py  customer_service.py  activity_service.py
-│   │   └── api/        routes.py  agent_routes.py
-│   └── tests/          conftest.py  test_kirai.py   (40 tests)
+│   │   ├── services/   inventory_service.py  order_service.py  customer_service.py  activity_service.py  ledger_service.py
+│   │   └── api/        routes.py  agent_routes.py  auth_routes.py  ledger_routes.py
+│   └── tests/          conftest.py  test_kirai.py  test_ledger.py  test_idempotency.py  test_auth.py  test_safeguards.py   (89 tests)
 └── frontend/
-    ├── app/        (/, /operator, /orders, /inventory, /customers, /activity, /settings)
+    ├── app/        (/, /login, /operator, /orders, /inventory, /customers, /ledger, /activity, /settings)
     ├── components/ (app-shell, shared, operator/*, orders/*, inventory/*, ui/* = shadcn)
     ├── lib/  hooks/  types/  public/
 ```
@@ -76,13 +77,14 @@ cd backend
 python -m venv venv
 venv\Scripts\activate            # macOS/Linux: source venv/bin/activate
 pip install -r requirements.txt
-copy .env.example .env           # macOS/Linux: cp .env.example .env   → then put your EURI_API_KEY in .env
-python -m app.seed               # creates kirai.db with 22 products, 4 customers, 8 sample orders
-uvicorn app.main:app --reload
+copy .env.example .env           # macOS/Linux: cp .env.example .env
+#   then in .env: set EURI_API_KEY=...  and  DEMO_MODE=true   (DEMO_MODE seeds sample data + enables Reset Demo Data)
+uvicorn app.main:app --reload    # with DEMO_MODE=true the empty database is seeded automatically
 ```
 
 API: http://localhost:8000 · interactive docs: http://localhost:8000/docs
-(The server also auto-seeds an empty database on startup, so `python -m app.seed` is optional.)
+`python -m app.seed` seeds sample data explicitly (22 products, 4 customers, 8 sample orders) and
+`python -m app.seed --reset` wipes and re-seeds; the reset only runs with `DEMO_MODE=true`.
 
 ### 2. Frontend
 
@@ -99,7 +101,7 @@ Open http://localhost:3000.
 
 ```powershell
 cd backend
-python -m pytest tests -q        # 40 tests; never calls the real EURI API
+python -m pytest tests -q        # 89 tests; never calls the real EURI API
 ```
 
 ## Environment variables
@@ -110,7 +112,10 @@ python -m pytest tests -q        # 40 tests; never calls the real EURI API
 | | `EURI_BASE_URL` | Default `https://api.euron.one/api/v1/euri` (documented EURI base URL) |
 | | `EURI_MODEL` | e.g. `gpt-4.1-nano` |
 | | `EURI_TIMEOUT_SECONDS` | Hard wall-clock cap per EURI call (default `8`); slower → local parser fallback |
-| | `FRONTEND_URL` | Allowed CORS origin (`*.vercel.app` is also allowed) |
+| | `FRONTEND_URL`, `EXTRA_ORIGINS` | Exact browser origins allowed for CORS and cookies (no wildcards) |
+| | `DEMO_MODE` | `true` = sample data + Reset Demo Data (deletes everything). Default `false`. |
+| | `OWNER_PASSWORD_HASH` | Owner login hash from `python -m app.auth_setup` (`OWNER_PASSWORD` = plain, demos only) |
+| | `SESSION_TTL_HOURS`, `COOKIE_SAMESITE`, `COOKIE_SECURE` | Session lifetime and cookie flags (cross-site deploys: `none` + `true`) |
 | | `DATABASE_URL`, `STORE_NAME`, `STORE_LOCATION`, `DELIVERY_CHARGE`, `FREE_DELIVERY_ABOVE` | Optional |
 | `frontend/.env.local` | `NEXT_PUBLIC_API_URL` | Backend URL |
 
@@ -122,13 +127,36 @@ not used: `EuriClient.structured_output()` prompts for JSON and validates it str
 for invalid JSON; timeouts are never retried). `EuriClient.tool_call()` lets the model pick from an allow-list, validated by
 the backend. All EURI code is isolated in `backend/app/ai/`. Identical messages reuse a cached temperature-0 parse.
 
+## Security and operating modes
+
+| | `DEMO_MODE=true` (demo) | `DEMO_MODE=false` (real store, the default) |
+|---|---|---|
+| Sample data | seeded on startup | never created |
+| Reset / seed | allowed | refused with 403 (even from the CLI) |
+| No owner password set | API is open (local demo) | private API answers 503, it never opens by accident |
+| Owner password set | sign-in required | sign-in required |
+
+- **Owner login:** run `python -m app.auth_setup` and put the printed `OWNER_PASSWORD_HASH=` line in `backend/.env`
+  (only a salted scrypt hash is stored). Sign-in creates a server-side session in an `HttpOnly` cookie; the token is
+  stored hashed, expires after `SESSION_TTL_HOURS`, and sign-out (top right) ends it and clears locally saved drafts.
+- Everything except `GET /api/health` and `/api/auth/*` needs the session: orders, inventory, customers, the ledger,
+  settings and the AI endpoints (so anonymous callers cannot read data or spend EURI credits).
+- Failed logins are limited (5 attempts, then a 5-minute lock per client address). State-changing browser requests must
+  come from the configured `FRONTEND_URL` (CSRF), and CORS allows only exact configured origins, no wildcards.
+- **Retries are safe:** `POST /api/orders` and `POST /api/agent/process` accept an `Idempotency-Key` header (the UI
+  sends one per action and reuses it when you press *Try Again*). The same key + request returns the first result: no
+  second order and no second stock deduction. The same key with different details is rejected (409).
+- Deploying across sites (Vercel + separate API host) needs `COOKIE_SAMESITE=none`, `COOKIE_SECURE=true` and HTTPS.
+
 ## Demo reset
 
+`DEMO_MODE=true` only.
+
 - UI: **Settings → Reset Demo Data**, or
-- API: `POST /api/demo/reset`, or
+- API: `POST /api/demo/reset` (signed in), or
 - CLI: `python -m app.seed --reset`
 
-Reset drops and rebuilds all tables: orders, items and logs are wiped, stock is restored, demo customers are recreated,
+Reset keeps your login session, then drops and rebuilds all data tables (including the financial ledger): orders, items and logs are wiped, stock is restored, demo customers are recreated,
 and the order counter is set so the next live order is **#1042**.
 
 ## API
@@ -195,7 +223,8 @@ endpoints · polished responsive UI · loading, error and toast states · demo r
 - The "confirmation" is generated for the customer in the app; no SMS/WhatsApp is actually sent.
 - Voice recognition is English-India (Roman script), so Hinglish works but Devanagari Hindi does not; it is unavailable in Firefox
   (the mic button is hidden there and typing still works). A misheard sentence is sent as heard, so check the transcript.
-- No authentication (out of scope); one demo store. SQLite on Render/Railway free tiers is ephemeral — the app auto-seeds on start.
+- Single store-owner login only (no multiple users or roles); one store. SQLite on Render/Railway free tiers is
+  ephemeral: use a persistent disk for real data (and keep `DEMO_MODE=false`).
 - Quantities are counted in packs/units ("5 kg atta" is not converted to pack sizes).
 
 ## Future improvements
